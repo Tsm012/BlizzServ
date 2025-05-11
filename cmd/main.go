@@ -4,6 +4,8 @@ import (
 	"flag"
 	"log"
 	"net/http"
+
+	"github.com/Tsm012/BlizServe/internal"
 )
 
 func main() {
@@ -22,11 +24,13 @@ func main() {
 		//TODO : Add a function to start health checks
 	}
 
-	http.HandleFunc("GET /api/health/checks", listHealthchecksHandler)
-	http.HandleFunc("GET /api/health/checks/{server_id}", getHealthcheckHandler)
-	http.HandleFunc("POST /api/health/checks", createHealthcheckHandler)
-	http.HandleFunc("POST /api/health/checks/{server_id}/try", executeHealthcheckHandler)
-	http.HandleFunc("DELETE /api/health/checks/{server_id}", deleteHealthcheckHandler)
+	handler := internal.NewHandler()
+
+	http.HandleFunc("GET /api/health/checks", handler.ListHealthChecksHandler)
+	http.HandleFunc("GET /api/health/checks/{server_id}", handler.GetHealthCheckHandler)
+	http.HandleFunc("POST /api/health/checks", handler.CreateHealthCheckHandler)
+	http.HandleFunc("POST /api/health/checks/{server_id}/try", handler.ExecuteHealthcheckHandler)
+	http.HandleFunc("DELETE /api/health/checks/{server_id}", handler.DeleteHealthcheckHandler)
 
 	if *ssl {
 		if *sslCert != "" && *sslKey != "" {

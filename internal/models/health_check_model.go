@@ -1,6 +1,6 @@
-package main
+package models
 
-type HealthcheckPayload struct {
+type HealthCheckModel struct {
 	ID       string `json:"id"`
 	Status   string `json:"status"`
 	Code     int32  `json:"code"`

@@ -2,3 +2,4 @@
 *.exe
 *.crt
 *.key
+.save

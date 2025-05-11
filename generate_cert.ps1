@@ -2,8 +2,8 @@
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 # Define file paths
-$crtPath = Join-Path -Path $scriptDir -ChildPath "certificate.crt"
-$keyPath = Join-Path -Path $scriptDir -ChildPath "certificate.key"
+$crtPath = Join-Path -Path $scriptDir -ChildPath "certs/certificate.crt"
+$keyPath = Join-Path -Path $scriptDir -ChildPath "certs/certificate.key"
 
 # Create the self-signed certificate
 $cert = New-SelfSignedCertificate -DnsName "localhost" -CertStoreLocation "Cert:\CurrentUser\My" -KeyExportPolicy Exportable
