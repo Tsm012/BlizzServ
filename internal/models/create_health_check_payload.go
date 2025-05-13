@@ -10,8 +10,8 @@ type CreateHealthCheckResponseModel struct {
 }
 
 type ListHealthCheckResponseModel struct {
-	Page         int32              `json:"page"`
-	Total        int32              `json:"total"`
-	Size         int32              `json:"size"`
+	Page         int                `json:"page"`
+	Total        int                `json:"total"`
+	Size         int                `json:"size"`
 	HealthChecks []HealthCheckModel `json:"items"`
 }

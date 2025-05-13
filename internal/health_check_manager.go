@@ -2,8 +2,9 @@ package internal
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
-	"maps"
+	"log"
 	"net/http"
 	"os"
 	"time"
@@ -13,52 +14,59 @@ import (
 
 type HealthCheckManager struct {
 	dataChannels   map[string]chan models.HealthCheckModel
-	healthChecks   map[string]models.HealthCheckModel
+	healthChecks   OrderedHealthCheckMap
 	endpointLookup map[string]string
+	checkFrequency time.Duration
+	defaultTimeout time.Duration
 }
 
-func NewHealthCheckManager() HealthCheckManager {
+func NewHealthCheckManager(checkFrequency time.Duration) HealthCheckManager {
 	manager := HealthCheckManager{
-		healthChecks:   map[string]models.HealthCheckModel{},
+		healthChecks: OrderedHealthCheckMap{
+			Keys: []string{},
+			Data: map[string]models.HealthCheckModel{},
+		},
 		endpointLookup: map[string]string{},
 		dataChannels:   map[string]chan models.HealthCheckModel{},
+		checkFrequency: checkFrequency,
+		defaultTimeout: 15 * time.Second,
 	}
 	manager.LoadFromFile()
 	return manager
 }
 
-func (hcm *HealthCheckManager) AddHealthCheck(healthCheckModel models.HealthCheckModel) {
-	hcm.healthChecks[healthCheckModel.ID] = healthCheckModel
+func (hcm *HealthCheckManager) AddHealthCheck(healthCheckModel models.HealthCheckModel) error {
+	hcm.healthChecks.Add(healthCheckModel.ID, healthCheckModel)
 	hcm.endpointLookup[healthCheckModel.Endpoint] = healthCheckModel.ID
 	dataChannel := make(chan models.HealthCheckModel)
 	hcm.dataChannels[healthCheckModel.ID] = dataChannel
-	go monitor(healthCheckModel, dataChannel)
-	go listener(dataChannel)
+	go hcm.monitor(healthCheckModel, hcm.checkFrequency, dataChannel)
+	go hcm.listener(dataChannel)
 	hcm.SaveToFile()
+	return nil
 }
 
 func (hcm *HealthCheckManager) ListHealthChecks() []models.HealthCheckModel {
-	var healthChecks []models.HealthCheckModel
-	for healthCheck := range maps.Values(hcm.healthChecks) {
-		healthChecks = append(healthChecks, healthCheck)
-	}
-	return healthChecks
+	return hcm.healthChecks.ToSortedList()
 }
 
-func (hcm *HealthCheckManager) GetHealthCheck(serverId string) (models.HealthCheckModel, error) {
-	healthCheck := <-hcm.dataChannels[serverId]
-	return healthCheck, nil
+func (hcm *HealthCheckManager) GetHealthCheck(serverId string) (*models.HealthCheckModel, error) {
+	healthCheck, ok := hcm.healthChecks.Get(serverId)
+	if !ok {
+		return nil, errors.New("health check not found")
+	}
+	return &healthCheck, nil
 }
 
 func (hcm *HealthCheckManager) DeleteHealthCheck(serverId string) {
-	healthCheck, ok := hcm.healthChecks[serverId]
+	healthCheck, ok := hcm.healthChecks.Get(serverId)
 	if !ok {
 		return
 	}
 
 	close(hcm.dataChannels[healthCheck.ID])
 	delete(hcm.dataChannels, healthCheck.ID)
-	delete(hcm.healthChecks, healthCheck.ID)
+	hcm.healthChecks.Delete(healthCheck.ID)
 	delete(hcm.endpointLookup, healthCheck.Endpoint)
 
 	hcm.SaveToFile()
@@ -93,28 +101,30 @@ func (hcm *HealthCheckManager) LoadFromFile() {
 
 	// Recreate the endpoint lookup map
 	hcm.endpointLookup = make(map[string]string)
-	for _, healthCheck := range hcm.healthChecks {
+	for _, healthCheckKey := range hcm.healthChecks.Keys {
+		healthCheck, _ := hcm.healthChecks.Get(healthCheckKey)
 		hcm.endpointLookup[healthCheck.Endpoint] = healthCheck.ID
 		dataChannel := make(chan models.HealthCheckModel)
 		hcm.dataChannels[healthCheck.ID] = dataChannel
-		go monitor(healthCheck, dataChannel)
-		go listener(dataChannel)
+		go hcm.monitor(healthCheck, hcm.checkFrequency, dataChannel)
+		go hcm.listener(dataChannel)
 	}
 }
 
-func listener(dataChannel chan models.HealthCheckModel) {
+func (hcm *HealthCheckManager) listener(dataChannel chan models.HealthCheckModel) {
 	for healthCheck := range dataChannel {
 		// Print the ID and the received HealthCheckModel
 		healthCheckData, err := json.Marshal(healthCheck)
 		if err != nil {
-			println("Error marshaling HealthCheckModel:", err.Error())
+			log.Println("Error marshaling HealthCheckModel:", err.Error())
 			continue
 		}
-		println("Received update for ", string(healthCheckData))
+		log.Println("Received update for ", string(healthCheckData))
+		hcm.healthChecks.Set(healthCheck.ID, healthCheck)
 	}
 }
 
-func monitor(healthCheckModel models.HealthCheckModel, dataChannel chan models.HealthCheckModel) {
+func (hcm *HealthCheckManager) monitor(healthCheckModel models.HealthCheckModel, frequency time.Duration, dataChannel chan models.HealthCheckModel) {
 	for {
 		select {
 		case <-dataChannel:
@@ -123,28 +133,39 @@ func monitor(healthCheckModel models.HealthCheckModel, dataChannel chan models.H
 			if dataChannel == nil {
 				break
 			}
-			performHealthCheck(&healthCheckModel)
-			dataChannel <- healthCheckModel
+
+			dataChannel <- hcm.performHealthCheck(healthCheckModel, hcm.defaultTimeout)
 		}
-		time.Sleep(2 * time.Second)
+		time.Sleep(frequency)
 	}
 }
 
-func performHealthCheck(healthCheckModel *models.HealthCheckModel) {
+func (hcm *HealthCheckManager) performHealthCheck(healthCheckModel models.HealthCheckModel, timeout time.Duration) models.HealthCheckModel {
 	start := time.Now()
 
+	// Create an HTTP client with a timeout
+	client := &http.Client{Timeout: timeout}
+
 	// Perform an HTTP GET request to the health check endpoint
-	resp, err := http.Get(healthCheckModel.Endpoint)
+	resp, err := client.Get(healthCheckModel.Endpoint)
 	if err != nil {
-		println("Error performing health check for endpoint:", healthCheckModel.Endpoint, "Error:", err.Error())
-		return
+		log.Println("Error performing health check for endpoint:", healthCheckModel.Endpoint, "Error:", err.Error())
+		healthCheckModel.Error = err.Error()
+		return healthCheckModel
 	}
 	defer resp.Body.Close()
+
+	// Check if the HTTP request was successful
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		healthCheckModel.Error = fmt.Sprintf("Unsuccessful status code: %d", resp.StatusCode)
+	}
 
 	// Update the health check model with the response status code
 	healthCheckModel.Code = int32(resp.StatusCode)
 	healthCheckModel.Status = resp.Status
 	healthCheckModel.Checked = time.Now().Unix()
 	healthCheckModel.Duration = fmt.Sprintf("%d%s", time.Since(start).Milliseconds(), "ms")
-	healthCheckModel.Error = ""
+
+	// Return the updated health check model
+	return healthCheckModel
 }

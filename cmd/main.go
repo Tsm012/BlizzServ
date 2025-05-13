@@ -4,6 +4,7 @@ import (
 	"flag"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/Tsm012/BlizServe/internal"
 )
@@ -21,10 +22,12 @@ func main() {
 	}
 
 	if *checkFrequency == 0 {
-		//TODO : Add a function to start health checks
+		// 30 second frequency by default
+		*checkFrequency = 30 * time.Second
 	}
 
-	handler := internal.NewHandler()
+	healthCheckManager := internal.NewHealthCheckManager(*checkFrequency)
+	handler := internal.NewHandler(healthCheckManager)
 
 	http.HandleFunc("GET /api/health/checks", handler.ListHealthChecksHandler)
 	http.HandleFunc("GET /api/health/checks/{server_id}", handler.GetHealthCheckHandler)
