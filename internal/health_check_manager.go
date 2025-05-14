@@ -14,7 +14,7 @@ import (
 
 type HealthCheckManager struct {
 	dataChannels   map[string]chan models.HealthCheckModel
-	healthChecks   OrderedHealthCheckMap
+	healthChecks   HealthCheckRepository
 	endpointLookup map[string]string
 	checkFrequency time.Duration
 	defaultTimeout time.Duration
@@ -22,7 +22,7 @@ type HealthCheckManager struct {
 
 func NewHealthCheckManager(checkFrequency time.Duration) HealthCheckManager {
 	manager := HealthCheckManager{
-		healthChecks: OrderedHealthCheckMap{
+		healthChecks: HealthCheckRepository{
 			Keys: []string{},
 			Data: map[string]models.HealthCheckModel{},
 		},
@@ -31,18 +31,23 @@ func NewHealthCheckManager(checkFrequency time.Duration) HealthCheckManager {
 		checkFrequency: checkFrequency,
 		defaultTimeout: 15 * time.Second,
 	}
-	manager.LoadFromFile()
+	manager.loadFromFile()
 	return manager
 }
 
 func (hcm *HealthCheckManager) AddHealthCheck(healthCheckModel models.HealthCheckModel) error {
+	// Adds health check to the repository and endpoint cache
 	hcm.healthChecks.Add(healthCheckModel.ID, healthCheckModel)
 	hcm.endpointLookup[healthCheckModel.Endpoint] = healthCheckModel.ID
+
+	// Create a new data channel to use in monitors and listeners
 	dataChannel := make(chan models.HealthCheckModel)
 	hcm.dataChannels[healthCheckModel.ID] = dataChannel
+
+	// Start monitors and listeners for the health check
 	go hcm.monitor(healthCheckModel, hcm.checkFrequency, dataChannel)
-	go hcm.listener(dataChannel)
-	hcm.SaveToFile()
+	go hcm.listen(dataChannel)
+	hcm.saveHealthChecks()
 	return nil
 }
 
@@ -64,15 +69,16 @@ func (hcm *HealthCheckManager) DeleteHealthCheck(serverId string) {
 		return
 	}
 
+	//close data channels
 	close(hcm.dataChannels[healthCheck.ID])
 	delete(hcm.dataChannels, healthCheck.ID)
 	hcm.healthChecks.Delete(healthCheck.ID)
 	delete(hcm.endpointLookup, healthCheck.Endpoint)
 
-	hcm.SaveToFile()
+	hcm.saveHealthChecks()
 }
 
-func (hcm *HealthCheckManager) SaveToFile() error {
+func (hcm *HealthCheckManager) saveHealthChecks() error {
 	file, err := os.Create(".save")
 	if err != nil {
 		return err
@@ -87,7 +93,7 @@ func (hcm *HealthCheckManager) SaveToFile() error {
 	return nil
 }
 
-func (hcm *HealthCheckManager) LoadFromFile() {
+func (hcm *HealthCheckManager) loadFromFile() {
 	file, err := os.Open(".save")
 	if err != nil {
 		return
@@ -99,7 +105,7 @@ func (hcm *HealthCheckManager) LoadFromFile() {
 		return
 	}
 
-	// Recreate the endpoint lookup map
+	// Recreate the endpoint repository and data channels
 	hcm.endpointLookup = make(map[string]string)
 	for _, healthCheckKey := range hcm.healthChecks.Keys {
 		healthCheck, _ := hcm.healthChecks.Get(healthCheckKey)
@@ -107,11 +113,11 @@ func (hcm *HealthCheckManager) LoadFromFile() {
 		dataChannel := make(chan models.HealthCheckModel)
 		hcm.dataChannels[healthCheck.ID] = dataChannel
 		go hcm.monitor(healthCheck, hcm.checkFrequency, dataChannel)
-		go hcm.listener(dataChannel)
+		go hcm.listen(dataChannel)
 	}
 }
 
-func (hcm *HealthCheckManager) listener(dataChannel chan models.HealthCheckModel) {
+func (hcm *HealthCheckManager) listen(dataChannel chan models.HealthCheckModel) {
 	for healthCheck := range dataChannel {
 		// Print the ID and the received HealthCheckModel
 		healthCheckData, err := json.Marshal(healthCheck)
@@ -128,12 +134,9 @@ func (hcm *HealthCheckManager) monitor(healthCheckModel models.HealthCheckModel,
 	for {
 		select {
 		case <-dataChannel:
-			healthCheckModel = <-dataChannel
+			log.Println("Stopping monitor for health check ID:", healthCheckModel.ID)
+			return
 		default:
-			if dataChannel == nil {
-				break
-			}
-
 			dataChannel <- hcm.performHealthCheck(healthCheckModel, hcm.defaultTimeout)
 		}
 		time.Sleep(frequency)
@@ -141,27 +144,24 @@ func (hcm *HealthCheckManager) monitor(healthCheckModel models.HealthCheckModel,
 }
 
 func (hcm *HealthCheckManager) performHealthCheck(healthCheckModel models.HealthCheckModel, timeout time.Duration) models.HealthCheckModel {
-	start := time.Now()
-
-	// Create an HTTP client with a timeout
 	client := &http.Client{Timeout: timeout}
 
-	// Perform an HTTP GET request to the health check endpoint
+	start := time.Now()
 	resp, err := client.Get(healthCheckModel.Endpoint)
 	if err != nil {
 		log.Println("Error performing health check for endpoint:", healthCheckModel.Endpoint, "Error:", err.Error())
-		healthCheckModel.Error = err.Error()
+		healthCheckModel.Error = "An error occurred while performing the health check"
 		return healthCheckModel
 	}
 	defer resp.Body.Close()
 
 	// Check if the HTTP request was successful
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		healthCheckModel.Error = fmt.Sprintf("Unsuccessful status code: %d", resp.StatusCode)
+		healthCheckModel.Error = fmt.Sprintf("Unsuccessful: %s", resp.Status)
 	}
 
 	// Update the health check model with the response status code
-	healthCheckModel.Code = int32(resp.StatusCode)
+	healthCheckModel.Code = resp.StatusCode
 	healthCheckModel.Status = resp.Status
 	healthCheckModel.Checked = time.Now().Unix()
 	healthCheckModel.Duration = fmt.Sprintf("%d%s", time.Since(start).Milliseconds(), "ms")

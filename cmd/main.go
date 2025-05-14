@@ -37,8 +37,15 @@ func main() {
 
 	if *ssl {
 		if *sslCert != "" && *sslKey != "" {
-			http.ListenAndServeTLS(*bind, *sslCert, *sslKey, nil)
+			err := http.ListenAndServeTLS(*bind, *sslCert, *sslKey, nil)
+			if err != nil {
+				log.Fatalf("Failed to start server with SSL: %v", err)
+			}
+		}
+	} else {
+		err := http.ListenAndServe(*bind, nil)
+		if err != nil {
+			log.Fatalf("Failed to start server with SSL: %v", err)
 		}
 	}
-	http.ListenAndServe(*bind, nil)
 }
