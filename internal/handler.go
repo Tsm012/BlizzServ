@@ -29,7 +29,7 @@ func (h *Handler) ListHealthChecksHandler(w http.ResponseWriter, r *http.Request
 
 	// string to int
 	page, err := strconv.Atoi(pageParameter)
-	if err != nil {
+	if err != nil || page < 1 {
 		page = 1
 	}
 
